@@ -2,7 +2,7 @@
 (() => {
   const $ = id => document.getElementById(id);
   const el = { connect: $('connectScreen'), chat: $('chatScreen'), myId: $('myId'), friendId: $('friendId'), pass: $('passphrase'), connectBtn: $('connectButton'), error: $('connectError'), peerState: $('peerState'), status: $('connectionStatus'), typing: $('typingStatus'), messages: $('messages'), input: $('messageInput'), composer: $('composer'), file: $('fileInput'), preview: $('filePreview'), fileName: $('fileName'), toast: $('toast') };
-  let peer, conn, key, typingTimer, selectedFile, lastTypingSent = 0, receivedFiles = {}, reconnectTimer, flushing = false, roomBase, peerSlot = 0;
+  let peer, conn, key, typingTimer, selectedFile, lastTypingSent = 0, receivedFiles = Object.create(null), reconnectTimer, flushing = false, roomBase, peerSlot = 0;
   let mediaCall, localStream, pendingCall, callToken, callVideo = false, callReady;
   const MAX_FILE = 5 * 1024 * 1024, CHUNK_SIZE = 42 * 1024;
 
@@ -14,7 +14,7 @@
   function showError(message) { el.error.textContent = message; }
   function formatTime(time) { return new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' }).format(new Date(time)); }
   function stateTick(state) { return state === 'read' ? '<span class="ticks read">✓✓</span>' : state === 'delivered' ? '<span class="ticks">✓✓</span>' : state === 'sent' ? '<span class="ticks">✓</span>' : '<span class="ticks">◷</span>'; }
-  function attachmentMarkup(file) { const url = file.data ? URL.createObjectURL(new Blob([base64ToBytes(file.data)], { type: file.type })) : (file.url || ''); return `<a class="attachment" href="${url || '#'}" ${url ? `download="${escape(file.name)}"` : ''}><span class="file-icon">${file.type?.startsWith('image/') ? '▧' : '▣'}</span><span>${escape(file.name)}<br><small>${Math.ceil(file.size / 1024)} KB</small></span></a>`; }
+  function attachmentMarkup(file) { const url = file.data ? URL.createObjectURL(new Blob([base64ToBytes(file.data)], { type: 'application/octet-stream' })) : ''; return `<a class="attachment" href="${url || '#'}" ${url ? `download="${escape(file.name)}"` : ''}><span class="file-icon">${file.type?.startsWith('image/') ? '▧' : '▣'}</span><span>${escape(file.name)}<br><small>${Math.ceil(file.size / 1024)} KB</small></span></a>`; }
   function messageNode(msg) { const node = document.createElement('article'); node.className = `bubble ${msg.mine ? 'mine' : ''}`; node.dataset.id = msg.id; node.innerHTML = `${msg.text ? `<div class="body">${escape(msg.text)}</div>` : ''}${msg.file ? attachmentMarkup(msg.file) : ''}<div class="meta"><span>${formatTime(msg.time)}</span>${msg.mine ? stateTick(msg.state) : ''}</div>`; return node; }
   async function renderMessages() { const messages = await DuoDB.getMessages(); el.messages.innerHTML = ''; if (!messages.length) el.messages.innerHTML = '<p class="empty">Your messages stay only on this device. Start the conversation when you are connected.</p>'; else messages.forEach(m => el.messages.append(messageNode(m))); scrollBottom(); }
   function scrollBottom() { requestAnimationFrame(() => { el.messages.scrollTop = el.messages.scrollHeight; }); }
@@ -29,6 +29,7 @@
     peer.on('connection', async incoming => {
       if (!key && el.pass.value.length >= 6) { try { await prepareKey(); } catch (_) {} }
       if (!key) { incoming.on('open', () => incoming.close()); toast('Incoming connection refused: enter your shared secret first.'); return; }
+      if (conn?.ready) { incoming.on('open', () => incoming.close()); return; }
       if (conn) {
         // Both people may press Connect at once. Keep the same connection on both ends.
         if (peer.id < incoming.peer) { incoming.on('open', () => incoming.close()); return; }
@@ -49,13 +50,13 @@
   async function prepareKey() { const pass = el.pass.value; if (pass.length < 12) throw new Error('Use a secret code of at least 12 characters.'); key = await DuoCrypto.makeKey(pass); }
   async function startConnection() {
     showError('');
-    try { if (!window.Peer) throw new Error('Could not load the connection service. Check your internet.'); const normalize = value => { let digits = value.replace(/\D/g, ''); if (digits.length === 12 && digits.startsWith('91')) digits = digits.slice(2); return digits; }; const own = normalize($('ownNumber').value), friend = normalize($('friendNumber').value); if (!/^[6-9]\d{9}$/.test(own) || !/^[6-9]\d{9}$/.test(friend) || own === friend) throw new Error('Enter two different valid 10-digit Indian phone numbers.'); await prepareKey(); await DuoDB.setMeta('ownNumber', own); await DuoDB.setMeta('friendNumber', friend); const pair = [own, friend].sort().join(':'); const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode('saumyaa-room-v2:' + pair + ':' + el.pass.value)); roomBase = 'saumyaa-' + Array.from(new Uint8Array(hash), b => b.toString(16).padStart(2, '0')).join(''); if (peer) peer.destroy(); clearTimeout(reconnectTimer); conn = null; setStatus('Connecting…'); initPeer(); }
+    try { if (!window.Peer) throw new Error('Could not load the connection service. Check your internet.'); const normalize = value => { let digits = value.replace(/\D/g, ''); if (digits.length === 12 && digits.startsWith('91')) digits = digits.slice(2); return digits; }; const own = normalize($('ownNumber').value), friend = normalize($('friendNumber').value); if (!/^[6-9]\d{9}$/.test(own) || !/^[6-9]\d{9}$/.test(friend) || own === friend) throw new Error('Enter two different valid 10-digit Indian phone numbers.'); await prepareKey(); await DuoDB.setMeta('ownNumber', own); await DuoDB.setMeta('friendNumber', friend); const pair = [own, friend].sort().join(':'); roomBase = await DuoCrypto.roomId(el.pass.value, pair); if (peer) peer.destroy(); clearTimeout(reconnectTimer); conn = null; setStatus('Connecting…'); initPeer(); }
     catch (err) { showError(err.message || 'Could not prepare secure connection.'); return false; }
     return true;
   }
   function attachConnection(connection) {
     if (conn && conn !== connection) conn.close(); conn = connection; conn.ready = false;
-    conn.on('open', async () => { setStatus('Checking shared secret…'); try { await sendEncrypted({ type: 'hello', version: 1, nonce: uid() }); } catch (err) { failConnection('Could not start encrypted connection.'); } });
+    conn.on('open', async () => { setStatus('Checking shared secret…'); try { connection.challenge = uid(); await sendEncrypted({ type: 'hello', version: 2, nonce: connection.challenge }); } catch (err) { failConnection('Could not start encrypted connection.'); } });
     let incomingQueue = Promise.resolve();
     conn.on('data', packet => { incomingQueue = incomingQueue.then(() => conn === connection ? receivePacket(packet) : undefined).catch(err => console.error('Packet error:', err)); });
     conn.on('close', () => { if (conn === connection) { endCall(false); conn = null; setStatus('Offline — messages will queue'); scheduleReconnect(); } });
@@ -66,25 +67,25 @@
   async function sendEncrypted(payload) { if (!conn?.open || !key) throw new Error('Not connected'); conn.send(await DuoCrypto.encrypt(key, payload)); }
   async function receivePacket(packet) {
     let data; try { data = await DuoCrypto.decrypt(key, packet); } catch (_) { return failConnection('Shared secrets do not match. Connection rejected.'); }
-    if (data.type === 'hello') { conn.ready = true; showError(''); setStatus('Online', true); await sendEncrypted({ type: 'hello-ok' }); await flushQueue(); return; }
-    if (data.type === 'hello-ok') { conn.ready = true; showError(''); setStatus('Online', true); await flushQueue(); return; }
+    if (data.type === 'hello' && data.version === 2 && typeof data.nonce === 'string' && data.nonce.length <= 100) { await sendEncrypted({ type: 'hello-ok', nonce: data.nonce }); return; }
+    if (data.type === 'hello-ok' && conn.challenge && data.nonce === conn.challenge) { conn.challenge = null; conn.ready = true; showError(''); setStatus('Online', true); await flushQueue(); return; }
     if (!conn.ready) return;
     if (data.type === 'call-offer' && typeof data.token === 'string' && !mediaCall && !pendingCall) { callToken = data.token; await sendEncrypted({ type: 'call-ready', token: data.token }); setTimeout(() => { if (callToken === data.token) callToken = null; }, 30000); }
     if (data.type === 'call-ready' && callReady?.token === data.token) callReady.resolve();
     if (data.type === 'call-end') endCall(false);
-    if (data.type === 'message') { const msg = data.message; if (!(await DuoDB.getMessages()).some(m => m.id === msg.id)) { msg.mine = false; msg.state = 'delivered'; await saveAndRender(msg); notify(msg); } await sendEncrypted({ type: 'receipt', id: msg.id, state: document.visibilityState === 'visible' ? 'read' : 'delivered' }); }
+    if (data.type === 'message') { const input = data.message; if (!input || typeof input.id !== 'string' || input.id.length > 100 || typeof input.text !== 'string' || input.text.length > 4000 || !Number.isFinite(input.time) || Math.abs(input.time - Date.now()) > 31536000000) return; const msg = { id: input.id, text: input.text, time: input.time, mine: false, state: 'delivered' }; if (!(await DuoDB.getMessages()).some(m => m.id === msg.id)) { await saveAndRender(msg); notify(msg); } await sendEncrypted({ type: 'receipt', id: msg.id, state: document.visibilityState === 'visible' ? 'read' : 'delivered' }); }
     if (data.type === 'receipt' && ['delivered', 'read'].includes(data.state)) { const current = (await DuoDB.getMessages()).find(m => m.id === data.id && m.mine); if (current && !(current.state === 'read' && data.state === 'delivered')) { await DuoDB.updateState(data.id, data.state); await replaceMessage(data.id); } }
     if (data.type === 'typing') { el.typing.textContent = 'typing…'; clearTimeout(typingTimer); typingTimer = setTimeout(() => el.typing.textContent = '', 1400); }
-    if (data.type === 'file-start') receivedFiles[data.id] = { ...data, chunks: [] };
-    if (data.type === 'file-chunk' && receivedFiles[data.id]) { const f = receivedFiles[data.id]; f.chunks[data.index] = data.chunk; }
-    if (data.type === 'file-end' && receivedFiles[data.id]) { const f = receivedFiles[data.id]; delete receivedFiles[data.id]; const data64 = f.chunks.join(''); const bytes = base64ToBytes(data64); if (bytes.length !== f.size || bytes.length > MAX_FILE) return; const file = { name: f.name, size: f.size, type: f.mime, data: data64 }; const msg = { id: data.messageId, time: data.time, mine: false, state: 'delivered', file }; if (!(await DuoDB.getMessages()).some(m => m.id === msg.id)) { await saveAndRender(msg); notify(msg); } await sendEncrypted({ type: 'receipt', id: msg.id, state: document.visibilityState === 'visible' ? 'read' : 'delivered' }); }
+    if (data.type === 'file-start' && typeof data.id === 'string' && data.id.length <= 100 && typeof data.name === 'string' && data.name.length <= 255 && typeof data.mime === 'string' && data.mime.length <= 100 && Number.isInteger(data.size) && data.size >= 0 && data.size <= MAX_FILE && Number.isFinite(data.time) && Math.abs(data.time - Date.now()) < 31536000000 && Object.keys(receivedFiles).length < 2) receivedFiles[data.id] = { ...data, chunks: [] };
+    if (data.type === 'file-chunk' && Object.hasOwn(receivedFiles, data.id)) { const f = receivedFiles[data.id]; if (Number.isInteger(data.index) && data.index >= 0 && data.index < Math.ceil((MAX_FILE * 4 / 3 + 4) / CHUNK_SIZE) && typeof data.chunk === 'string' && data.chunk.length <= CHUNK_SIZE && data.index === f.chunks.length) f.chunks.push(data.chunk); }
+    if (data.type === 'file-end' && Object.hasOwn(receivedFiles, data.id)) { const f = receivedFiles[data.id]; delete receivedFiles[data.id]; const data64 = f.chunks.join(''); const bytes = base64ToBytes(data64); if (bytes.length !== f.size || bytes.length > MAX_FILE) return; const file = { name: f.name, size: f.size, type: f.mime, data: data64 }; const msg = { id: f.id, time: f.time, mine: false, state: 'delivered', file }; if (!(await DuoDB.getMessages()).some(m => m.id === msg.id)) { await saveAndRender(msg); notify(msg); } await sendEncrypted({ type: 'receipt', id: msg.id, state: document.visibilityState === 'visible' ? 'read' : 'delivered' }); }
   }
-  async function flushQueue() { if (!canSend() || flushing) return; flushing = true; try { for (const msg of await DuoDB.getPending()) { try { await transmit(msg); } catch { break; } } } finally { flushing = false; } }
+  async function flushQueue() { if (!canSend() || flushing) return; flushing = true; try { for (const msg of await DuoDB.getPending()) { if (msg.room !== roomBase) continue; try { await transmit(msg); } catch { break; } } } finally { flushing = false; } }
   async function transmit(msg) { if (msg.file?.data) return sendFile(msg); await sendEncrypted({ type: 'message', message: { ...msg, state: 'sent' } }); }
-  async function sendText(text) { const msg = { id: uid(), text, time: Date.now(), mine: true, state: 'queued' }; await saveAndRender(msg); if (canSend()) try { await transmit(msg); } catch { toast('Message queued until reconnection.'); } }
+  async function sendText(text) { const msg = { id: uid(), text, time: Date.now(), mine: true, state: 'queued', room: roomBase }; await saveAndRender(msg); if (canSend()) try { await transmit(msg); } catch { toast('Message queued until reconnection.'); } }
   const bytesToBase64 = bytes => { let out = ''; for (let i = 0; i < bytes.length; i += 0x8000) out += String.fromCharCode(...bytes.subarray(i, i + 0x8000)); return btoa(out); };
   const base64ToBytes = b64 => Uint8Array.from(atob(b64), c => c.charCodeAt(0));
-  async function queueFile(file) { const data = bytesToBase64(new Uint8Array(await file.arrayBuffer())); const msg = { id: uid(), time: Date.now(), mine: true, state: 'queued', file: { name: file.name, size: file.size, type: file.type || 'application/octet-stream', data } }; await saveAndRender(msg); if (canSend()) try { await transmit(msg); } catch { toast('File queued until reconnection.'); } }
+  async function queueFile(file) { const data = bytesToBase64(new Uint8Array(await file.arrayBuffer())); const msg = { id: uid(), time: Date.now(), mine: true, state: 'queued', room: roomBase, file: { name: file.name, size: file.size, type: file.type || 'application/octet-stream', data } }; await saveAndRender(msg); if (canSend()) try { await transmit(msg); } catch { toast('File queued until reconnection.'); } }
   async function sendFile(msg) { const f = msg.file; await sendEncrypted({ type: 'file-start', id: msg.id, messageId: msg.id, name: f.name, size: f.size, mime: f.type, time: msg.time }); for (let i = 0, n = 0; i < f.data.length; i += CHUNK_SIZE, n++) await sendEncrypted({ type: 'file-chunk', id: msg.id, index: n, chunk: f.data.slice(i, i + CHUNK_SIZE) }); await sendEncrypted({ type: 'file-end', id: msg.id, messageId: msg.id, time: msg.time }); }
   function notify(msg) { if (document.hidden && Notification.permission === 'granted') new Notification('Saumyaa', { body: msg.text || `Sent a file: ${msg.file?.name || 'attachment'}` }); }
   async function openMedia(video) { return navigator.mediaDevices.getUserMedia({ audio: true, video }); }
