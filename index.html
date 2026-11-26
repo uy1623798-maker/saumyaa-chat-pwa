@@ -15,10 +15,12 @@
 <body>
   <main class="app-shell">
     <section id="connectScreen" class="screen connect-screen" aria-labelledby="appTitle">
-      <div class="brand"><span class="brand-mark">S</span><div><h1 id="appTitle">Saumyaa</h1><p>Private chat for two</p></div></div>
+      <div class="brand"><span class="brand-mark">S<span class="brand-heart">♥</span></span><div><h1 id="appTitle">Saumyaa<span class="brand-dot">.</span></h1><p>our little happy place <span>♥</span></p></div></div>
       <div class="card">
-        <h2>Connect with your friend</h2>
-        <p class="hint">Enter your number, your friend's number and the same private code on both phones.</p>
+        <div class="snack-art" aria-hidden="true"><span class="chip">🥔</span><span class="heart">♥</span><span class="momo">🥟</span></div>
+        <div class="card-kicker">A LITTLE SPACE FOR TWO</div>
+        <h2>Hey, momos <span>♥</span></h2>
+        <p class="hint intro">Good chats, favourite snacks &amp; you. Enter your numbers and the same secret code to get started.</p>
         <label>Your phone number <input id="ownNumber" type="tel" inputmode="numeric" autocomplete="tel" placeholder="Your 10-digit number"></label>
         <label>Friend's phone number <input id="friendNumber" type="tel" inputmode="numeric" autocomplete="off" placeholder="Friend's 10-digit number"><small>Numbers are saved on this device and used to find your chat. They are not verified by SMS.</small></label>
         <label>Secret code <input id="passphrase" type="password" autocomplete="new-password" placeholder="Enter your shared secret code"><small>Choose a long, unique code and share it privately.</small></label>
@@ -27,11 +29,11 @@
         <p id="installHelp" class="hint hidden">In Chrome, tap ⋮ and choose “Install app” or “Add to Home screen”.</p>
         <p id="connectError" class="error" role="alert"></p>
       </div>
-      <button id="themeButton" class="text-button">☾ Dark mode</button>
+      <div class="connect-footer"><span>made for your favourite person ♥</span><button id="themeButton" class="text-button">☾ Dark mode</button></div>
     </section>
 
     <section id="chatScreen" class="screen chat-screen hidden" aria-label="Chat">
-      <header class="chat-header"><button id="backButton" class="icon-button" aria-label="Connection settings">‹</button><div class="avatar">S</div><div class="contact"><strong id="contactName">Hey momos</strong><span id="connectionStatus">Offline</span><span id="typingStatus" aria-live="polite"></span></div><div class="header-actions"><button id="exportButton" class="icon-button" title="Export chat" aria-label="Export chat">⇩</button><button id="importButton" class="icon-button" title="Import chat" aria-label="Import chat">⇧</button><button id="clearButton" class="icon-button danger" title="Clear local chat" aria-label="Clear local chat">⌫</button><input id="importFile" type="file" accept="application/json" hidden></div></header>
+      <header class="chat-header"><button id="backButton" class="icon-button" aria-label="Connection settings">‹</button><div class="avatar">🥟</div><div class="contact"><strong id="contactName">Hey momos <span class="contact-heart">♥</span></strong><span id="connectionStatus">Offline</span><span id="typingStatus" aria-live="polite"></span></div><div class="header-actions"><button id="exportButton" class="icon-button" title="Export chat" aria-label="Export chat">⇩</button><button id="importButton" class="icon-button" title="Import chat" aria-label="Import chat">⇧</button><button id="clearButton" class="icon-button danger" title="Clear local chat" aria-label="Clear local chat">⌫</button><input id="importFile" type="file" accept="application/json" hidden></div></header>
       <div id="messages" class="messages" aria-live="polite"></div>
       <div class="call-actions"><button id="voiceCall" type="button">📞 Voice call</button><button id="videoCall" type="button">📹 Video call</button></div>
       <div id="callPanel" class="call-panel hidden" role="dialog" aria-label="Call"><p id="callStatus">Calling…</p><div class="call-videos"><video id="remoteVideo" autoplay playsinline></video><video id="localVideo" autoplay muted playsinline></video></div><div><button id="acceptCall" type="button" class="hidden">Accept</button><button id="muteCall" type="button" class="hidden">Mute</button><button id="endCall" type="button">End call</button></div></div>
