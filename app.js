@@ -49,7 +49,7 @@
   async function prepareKey() { const pass = el.pass.value; if (pass.length < 12) throw new Error('Use a secret code of at least 12 characters.'); key = await DuoCrypto.makeKey(pass); }
   async function startConnection() {
     showError('');
-    try { if (!window.Peer) throw new Error('Could not load the connection service. Check your internet.'); await prepareKey(); const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode('saumyaa-room-v1:' + el.pass.value)); roomBase = 'saumyaa-' + Array.from(new Uint8Array(hash), b => b.toString(16).padStart(2, '0')).join(''); if (peer) peer.destroy(); clearTimeout(reconnectTimer); conn = null; setStatus('Connecting…'); initPeer(); }
+    try { if (!window.Peer) throw new Error('Could not load the connection service. Check your internet.'); const normalize = value => { let digits = value.replace(/\D/g, ''); if (digits.length === 12 && digits.startsWith('91')) digits = digits.slice(2); return digits; }; const own = normalize($('ownNumber').value), friend = normalize($('friendNumber').value); if (!/^[6-9]\d{9}$/.test(own) || !/^[6-9]\d{9}$/.test(friend) || own === friend) throw new Error('Enter two different valid 10-digit Indian phone numbers.'); await prepareKey(); await DuoDB.setMeta('ownNumber', own); await DuoDB.setMeta('friendNumber', friend); const pair = [own, friend].sort().join(':'); const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode('saumyaa-room-v2:' + pair + ':' + el.pass.value)); roomBase = 'saumyaa-' + Array.from(new Uint8Array(hash), b => b.toString(16).padStart(2, '0')).join(''); if (peer) peer.destroy(); clearTimeout(reconnectTimer); conn = null; setStatus('Connecting…'); initPeer(); }
     catch (err) { showError(err.message || 'Could not prepare secure connection.'); return false; }
     return true;
   }
@@ -115,5 +115,5 @@
   $('importButton').addEventListener('click', () => $('importFile').click()); $('importFile').addEventListener('change', () => importChat($('importFile').files[0]));
   $('clearButton').addEventListener('click', async () => { if (confirm('Delete this local chat history from this device? This cannot be undone.')) { await DuoDB.clearMessages(); await renderMessages(); toast('Local chat cleared.'); } });
   document.addEventListener('visibilitychange', async () => { if (document.visibilityState === 'visible' && canSend()) { for (const m of (await DuoDB.getMessages()).filter(m => !m.mine && m.state === 'delivered')) await sendEncrypted({ type: 'receipt', id: m.id, state: 'read' }); } });
-  (async () => { if ('Notification' in window && Notification.permission === 'default') Notification.requestPermission(); await renderMessages(); })();
+  (async () => { $('ownNumber').value = await DuoDB.getMeta('ownNumber') || ''; $('friendNumber').value = await DuoDB.getMeta('friendNumber') || ''; if ('Notification' in window && Notification.permission === 'default') Notification.requestPermission(); await renderMessages(); })();
 })();

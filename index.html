@@ -18,7 +18,9 @@
       <div class="brand"><span class="brand-mark">S</span><div><h1 id="appTitle">Saumyaa</h1><p>Private chat for two</p></div></div>
       <div class="card">
         <h2>Connect with your friend</h2>
-        <p class="hint">You and your friend enter the same private code to start chatting.</p>
+        <p class="hint">Enter your number, your friend's number and the same private code on both phones.</p>
+        <label>Your phone number <input id="ownNumber" type="tel" inputmode="numeric" autocomplete="tel" placeholder="Your 10-digit number"></label>
+        <label>Friend's phone number <input id="friendNumber" type="tel" inputmode="numeric" autocomplete="off" placeholder="Friend's 10-digit number"><small>Numbers are saved on this device and used to find your chat. They are not verified by SMS.</small></label>
         <label>Secret code <input id="passphrase" type="password" autocomplete="new-password" placeholder="Enter your shared secret code"><small>Choose a long, unique code and share it privately.</small></label>
         <button id="connectButton" class="primary">Start chat</button>
         <button id="installButton" class="install-button" type="button">Install Saumyaa</button>
