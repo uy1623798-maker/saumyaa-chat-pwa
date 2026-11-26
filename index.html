@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#075e54">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <title>Saumyaa — private two-person chat</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main class="app-shell">
+    <section id="connectScreen" class="screen connect-screen" aria-labelledby="appTitle">
+      <div class="brand"><span class="brand-mark">S</span><div><h1 id="appTitle">Saumyaa</h1><p>Private chat for two</p></div></div>
+      <div class="card">
+        <h2>Connect with your friend</h2>
+        <p class="hint">You and your friend enter the same private code to start chatting.</p>
+        <label>Secret code <input id="passphrase" type="password" autocomplete="new-password" placeholder="Enter your shared secret code"><small>Choose a long, unique code and share it privately.</small></label>
+        <button id="connectButton" class="primary">Start chat</button>
+        <button id="installButton" class="install-button" type="button">Install Saumyaa</button>
+        <p id="installHelp" class="hint hidden">In Chrome, tap ⋮ and choose “Install app” or “Add to Home screen”.</p>
+        <p id="connectError" class="error" role="alert"></p>
+      </div>
+      <button id="themeButton" class="text-button">☾ Dark mode</button>
+    </section>
+
+    <section id="chatScreen" class="screen chat-screen hidden" aria-label="Chat">
+      <header class="chat-header"><button id="backButton" class="icon-button" aria-label="Connection settings">‹</button><div class="avatar">D</div><div class="contact"><strong id="contactName">Your friend</strong><span id="connectionStatus">Offline</span><span id="typingStatus" aria-live="polite"></span></div><div class="header-actions"><button id="exportButton" class="icon-button" title="Export chat" aria-label="Export chat">⇩</button><button id="importButton" class="icon-button" title="Import chat" aria-label="Import chat">⇧</button><button id="clearButton" class="icon-button danger" title="Clear local chat" aria-label="Clear local chat">⌫</button><input id="importFile" type="file" accept="application/json" hidden></div></header>
+      <div id="messages" class="messages" aria-live="polite"></div>
+      <div id="filePreview" class="file-preview hidden"><span id="fileName"></span><button id="removeFile" class="icon-button" aria-label="Remove attachment">×</button></div>
+      <form id="composer" class="composer"><input id="fileInput" type="file" hidden><button id="attachButton" type="button" class="icon-button" title="Attach a file" aria-label="Attach a file">＋</button><textarea id="messageInput" rows="1" maxlength="4000" placeholder="Message" aria-label="Message"></textarea><button class="send-button" aria-label="Send message">➤</button></form>
+    </section>
+  </main>
+  <div id="toast" class="toast" role="status"></div>
+  <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+  <script src="db.js"></script><script src="crypto.js"></script><script src="app.js"></script>
+  <script src="install.js"></script>
+  <script>if ('serviceWorker' in navigator && window.isSecureContext) navigator.serviceWorker.register('./sw.js').catch(console.warn);</script>
+</body>
+</html>

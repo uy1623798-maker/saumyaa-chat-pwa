@@ -1,0 +1,94 @@
+/* DuoChat application logic. PeerJS only brokers the initial WebRTC connection. */
+(() => {
+  const $ = id => document.getElementById(id);
+  const el = { connect: $('connectScreen'), chat: $('chatScreen'), myId: $('myId'), friendId: $('friendId'), pass: $('passphrase'), connectBtn: $('connectButton'), error: $('connectError'), peerState: $('peerState'), status: $('connectionStatus'), typing: $('typingStatus'), messages: $('messages'), input: $('messageInput'), composer: $('composer'), file: $('fileInput'), preview: $('filePreview'), fileName: $('fileName'), toast: $('toast') };
+  let peer, conn, key, typingTimer, selectedFile, lastTypingSent = 0, receivedFiles = {}, reconnectTimer, flushing = false, roomBase, peerSlot = 0;
+  const MAX_FILE = 5 * 1024 * 1024, CHUNK_SIZE = 42 * 1024;
+
+  const uid = () => crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`;
+  const escape = text => String(text).replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;', "'":'&#039;' })[c]);
+  function toast(text) { el.toast.textContent = text; el.toast.classList.add('show'); clearTimeout(toast.timer); toast.timer = setTimeout(() => el.toast.classList.remove('show'), 2600); }
+  function setStatus(text, online = false) { el.status.textContent = text; el.status.style.color = online ? '#169c5a' : ''; }
+  function canSend() { return conn?.open && conn.ready && key; }
+  function showError(message) { el.error.textContent = message; }
+  function formatTime(time) { return new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' }).format(new Date(time)); }
+  function stateTick(state) { return state === 'read' ? '<span class="ticks read">✓✓</span>' : state === 'delivered' ? '<span class="ticks">✓✓</span>' : state === 'sent' ? '<span class="ticks">✓</span>' : '<span class="ticks">◷</span>'; }
+  function attachmentMarkup(file) { const url = file.data ? URL.createObjectURL(new Blob([base64ToBytes(file.data)], { type: file.type })) : (file.url || ''); return `<a class="attachment" href="${url || '#'}" ${url ? `download="${escape(file.name)}"` : ''}><span class="file-icon">${file.type?.startsWith('image/') ? '▧' : '▣'}</span><span>${escape(file.name)}<br><small>${Math.ceil(file.size / 1024)} KB</small></span></a>`; }
+  function messageNode(msg) { const node = document.createElement('article'); node.className = `bubble ${msg.mine ? 'mine' : ''}`; node.dataset.id = msg.id; node.innerHTML = `${msg.text ? `<div class="body">${escape(msg.text)}</div>` : ''}${msg.file ? attachmentMarkup(msg.file) : ''}<div class="meta"><span>${formatTime(msg.time)}</span>${msg.mine ? stateTick(msg.state) : ''}</div>`; return node; }
+  async function renderMessages() { const messages = await DuoDB.getMessages(); el.messages.innerHTML = ''; if (!messages.length) el.messages.innerHTML = '<p class="empty">Your messages stay only on this device. Start the conversation when you are connected.</p>'; else messages.forEach(m => el.messages.append(messageNode(m))); scrollBottom(); }
+  function scrollBottom() { requestAnimationFrame(() => { el.messages.scrollTop = el.messages.scrollHeight; }); }
+  async function saveAndRender(message) { await DuoDB.putMessage(message); const empty = el.messages.querySelector('.empty'); if (empty) empty.remove(); el.messages.append(messageNode(message)); scrollBottom(); }
+  async function replaceMessage(id) { const msg = (await DuoDB.getMessages()).find(m => m.id === id); const old = el.messages.querySelector(`[data-id="${CSS.escape(id)}"]`); if (msg && old) old.replaceWith(messageNode(msg)); }
+
+  function initPeer(slot = 0) {
+    if (!window.Peer) { showError('The PeerJS library could not load. Check your internet connection and refresh.'); return; }
+    peerSlot = slot;
+    peer = new Peer(`${roomBase}-${slot}`, { debug: 1 });
+    peer.on('open', () => { setStatus('Waiting for your friend…'); if (slot === 1) scheduleReconnect(); });
+    peer.on('connection', async incoming => {
+      if (!key && el.pass.value.length >= 6) { try { await prepareKey(); } catch (_) {} }
+      if (!key) { incoming.on('open', () => incoming.close()); toast('Incoming connection refused: enter your shared secret first.'); return; }
+      if (conn) {
+        // Both people may press Connect at once. Keep the same connection on both ends.
+        if (peer.id < incoming.peer) { incoming.on('open', () => incoming.close()); return; }
+        conn.close();
+      }
+      attachConnection(incoming);
+    });
+    peer.on('disconnected', () => setStatus('Signaling offline'));
+    peer.on('error', err => { console.warn('PeerJS:', err); if (err.type === 'unavailable-id' && slot === 0) { peer.destroy(); initPeer(1); return; } if (err.type === 'unavailable-id') { failConnection('This code already has two people connected.'); return; } if (err.type === 'peer-unavailable') { conn = null; setStatus('Waiting for your friend…'); scheduleReconnect(); return; } showError(`Connection error: ${err.type || err.message}`); setStatus('Offline'); });
+  }
+  async function prepareKey() { const pass = el.pass.value; if (pass.length < 12) throw new Error('Use a secret code of at least 12 characters.'); key = await DuoCrypto.makeKey(pass); }
+  async function startConnection() {
+    showError('');
+    try { if (!window.Peer) throw new Error('Could not load the connection service. Check your internet.'); await prepareKey(); const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode('saumyaa-room-v1:' + el.pass.value)); roomBase = 'saumyaa-' + Array.from(new Uint8Array(hash), b => b.toString(16).padStart(2, '0')).join(''); if (peer) peer.destroy(); clearTimeout(reconnectTimer); conn = null; setStatus('Connecting…'); initPeer(); }
+    catch (err) { showError(err.message || 'Could not prepare secure connection.'); return false; }
+    return true;
+  }
+  function attachConnection(connection) {
+    if (conn && conn !== connection) conn.close(); conn = connection; conn.ready = false;
+    conn.on('open', async () => { setStatus('Checking shared secret…'); try { await sendEncrypted({ type: 'hello', version: 1, nonce: uid() }); } catch (err) { failConnection('Could not start encrypted connection.'); } });
+    let incomingQueue = Promise.resolve();
+    conn.on('data', packet => { incomingQueue = incomingQueue.then(() => conn === connection ? receivePacket(packet) : undefined).catch(err => console.error('Packet error:', err)); });
+    conn.on('close', () => { if (conn === connection) { conn = null; setStatus('Offline — messages will queue'); scheduleReconnect(); } });
+    conn.on('error', () => failConnection('Connection dropped. Your unsent messages are safely queued.'));
+  }
+  function scheduleReconnect() { clearTimeout(reconnectTimer); if (!key || !peer || peer.destroyed || peerSlot !== 1) return; reconnectTimer = setTimeout(() => { if (!conn && peer.open) attachConnection(peer.connect(`${roomBase}-0`, { reliable: true, serialization: 'json' })); else if (!conn) scheduleReconnect(); }, 5000); }
+  function failConnection(message) { if (message.includes('secrets do not match')) { key = null; clearTimeout(reconnectTimer); } if (conn) conn.close(); setStatus('Offline'); showError(message); toast(message); }
+  async function sendEncrypted(payload) { if (!conn?.open || !key) throw new Error('Not connected'); conn.send(await DuoCrypto.encrypt(key, payload)); }
+  async function receivePacket(packet) {
+    let data; try { data = await DuoCrypto.decrypt(key, packet); } catch (_) { return failConnection('Shared secrets do not match. Connection rejected.'); }
+    if (data.type === 'hello') { conn.ready = true; showError(''); setStatus('Online', true); await sendEncrypted({ type: 'hello-ok' }); await flushQueue(); return; }
+    if (data.type === 'hello-ok') { conn.ready = true; showError(''); setStatus('Online', true); await flushQueue(); return; }
+    if (!conn.ready) return;
+    if (data.type === 'message') { const msg = data.message; if (!(await DuoDB.getMessages()).some(m => m.id === msg.id)) { msg.mine = false; msg.state = 'delivered'; await saveAndRender(msg); notify(msg); } await sendEncrypted({ type: 'receipt', id: msg.id, state: document.visibilityState === 'visible' ? 'read' : 'delivered' }); }
+    if (data.type === 'receipt' && ['delivered', 'read'].includes(data.state)) { const current = (await DuoDB.getMessages()).find(m => m.id === data.id && m.mine); if (current && !(current.state === 'read' && data.state === 'delivered')) { await DuoDB.updateState(data.id, data.state); await replaceMessage(data.id); } }
+    if (data.type === 'typing') { el.typing.textContent = 'typing…'; clearTimeout(typingTimer); typingTimer = setTimeout(() => el.typing.textContent = '', 1400); }
+    if (data.type === 'file-start') receivedFiles[data.id] = { ...data, chunks: [] };
+    if (data.type === 'file-chunk' && receivedFiles[data.id]) { const f = receivedFiles[data.id]; f.chunks[data.index] = data.chunk; }
+    if (data.type === 'file-end' && receivedFiles[data.id]) { const f = receivedFiles[data.id]; delete receivedFiles[data.id]; const data64 = f.chunks.join(''); const bytes = base64ToBytes(data64); if (bytes.length !== f.size || bytes.length > MAX_FILE) return; const file = { name: f.name, size: f.size, type: f.mime, data: data64 }; const msg = { id: data.messageId, time: data.time, mine: false, state: 'delivered', file }; if (!(await DuoDB.getMessages()).some(m => m.id === msg.id)) { await saveAndRender(msg); notify(msg); } await sendEncrypted({ type: 'receipt', id: msg.id, state: document.visibilityState === 'visible' ? 'read' : 'delivered' }); }
+  }
+  async function flushQueue() { if (!canSend() || flushing) return; flushing = true; try { for (const msg of await DuoDB.getPending()) { try { await transmit(msg); } catch { break; } } } finally { flushing = false; } }
+  async function transmit(msg) { if (msg.file?.data) return sendFile(msg); await sendEncrypted({ type: 'message', message: { ...msg, state: 'sent' } }); }
+  async function sendText(text) { const msg = { id: uid(), text, time: Date.now(), mine: true, state: 'queued' }; await saveAndRender(msg); if (canSend()) try { await transmit(msg); } catch { toast('Message queued until reconnection.'); } }
+  const bytesToBase64 = bytes => { let out = ''; for (let i = 0; i < bytes.length; i += 0x8000) out += String.fromCharCode(...bytes.subarray(i, i + 0x8000)); return btoa(out); };
+  const base64ToBytes = b64 => Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+  async function queueFile(file) { const data = bytesToBase64(new Uint8Array(await file.arrayBuffer())); const msg = { id: uid(), time: Date.now(), mine: true, state: 'queued', file: { name: file.name, size: file.size, type: file.type || 'application/octet-stream', data } }; await saveAndRender(msg); if (canSend()) try { await transmit(msg); } catch { toast('File queued until reconnection.'); } }
+  async function sendFile(msg) { const f = msg.file; await sendEncrypted({ type: 'file-start', id: msg.id, messageId: msg.id, name: f.name, size: f.size, mime: f.type, time: msg.time }); for (let i = 0, n = 0; i < f.data.length; i += CHUNK_SIZE, n++) await sendEncrypted({ type: 'file-chunk', id: msg.id, index: n, chunk: f.data.slice(i, i + CHUNK_SIZE) }); await sendEncrypted({ type: 'file-end', id: msg.id, messageId: msg.id, time: msg.time }); }
+  function notify(msg) { if (document.hidden && Notification.permission === 'granted') new Notification('Saumyaa', { body: msg.text || `Sent a file: ${msg.file?.name || 'attachment'}` }); }
+  function setFile(file) { if (!file) return; if (file.size > MAX_FILE) return toast('Files must be 5 MB or smaller.'); selectedFile = file; el.fileName.textContent = `${file.name} (${Math.ceil(file.size / 1024)} KB)`; el.preview.classList.remove('hidden'); }
+  function openChat() { el.connect.classList.add('hidden'); el.chat.classList.remove('hidden'); renderMessages(); }
+  async function importChat(file) { try { const data = JSON.parse(await file.text()); if (!Array.isArray(data.messages)) throw new Error(); await DuoDB.importMessages(data.messages); await renderMessages(); toast('Chat imported to this device.'); } catch { toast('That is not a valid DuoChat backup.'); } }
+
+  el.connectBtn.addEventListener('click', async () => { if (await startConnection()) openChat(); });
+  $('backButton').addEventListener('click', () => { el.chat.classList.add('hidden'); el.connect.classList.remove('hidden'); });
+  $('themeButton').addEventListener('click', () => { document.body.classList.toggle('dark'); $('themeButton').textContent = document.body.classList.contains('dark') ? '☀ Light mode' : '☾ Dark mode'; });
+  el.composer.addEventListener('submit', async event => { event.preventDefault(); const text = el.input.value.trim(); if (!text && !selectedFile) return; if (text) { await sendText(text); el.input.value = ''; } if (selectedFile) { const file = selectedFile; selectedFile = null; el.preview.classList.add('hidden'); await queueFile(file); } });
+  el.input.addEventListener('input', () => { el.input.style.height = 'auto'; el.input.style.height = `${Math.min(el.input.scrollHeight, 120)}px`; if (canSend() && Date.now() - lastTypingSent > 700) { lastTypingSent = Date.now(); sendEncrypted({ type: 'typing' }).catch(() => {}); } });
+  $('attachButton').addEventListener('click', () => el.file.click()); el.file.addEventListener('change', () => setFile(el.file.files[0])); $('removeFile').addEventListener('click', () => { selectedFile = null; el.file.value = ''; el.preview.classList.add('hidden'); });
+  $('exportButton').addEventListener('click', async () => { const backup = { app: 'DuoChat', exportedAt: new Date().toISOString(), messages: await DuoDB.getMessages() }; const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json' })); a.download = `duochat-backup-${new Date().toISOString().slice(0,10)}.json`; a.click(); URL.revokeObjectURL(a.href); });
+  $('importButton').addEventListener('click', () => $('importFile').click()); $('importFile').addEventListener('change', () => importChat($('importFile').files[0]));
+  $('clearButton').addEventListener('click', async () => { if (confirm('Delete this local chat history from this device? This cannot be undone.')) { await DuoDB.clearMessages(); await renderMessages(); toast('Local chat cleared.'); } });
+  document.addEventListener('visibilitychange', async () => { if (document.visibilityState === 'visible' && canSend()) { for (const m of (await DuoDB.getMessages()).filter(m => !m.mine && m.state === 'delivered')) await sendEncrypted({ type: 'receipt', id: m.id, state: 'read' }); } });
+  (async () => { if ('Notification' in window && Notification.permission === 'default') Notification.requestPermission(); await renderMessages(); })();
+})();
