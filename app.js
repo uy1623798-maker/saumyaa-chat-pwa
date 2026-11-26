@@ -21,10 +21,20 @@
   async function saveAndRender(message) { await DuoDB.putMessage(message); const empty = el.messages.querySelector('.empty'); if (empty) empty.remove(); el.messages.append(messageNode(message)); scrollBottom(); }
   async function replaceMessage(id) { const msg = (await DuoDB.getMessages()).find(m => m.id === id); const old = el.messages.querySelector(`[data-id="${CSS.escape(id)}"]`); if (msg && old) old.replaceWith(messageNode(msg)); }
 
+  let relayConfig;
+  function configureRelay() {
+    const value = $('relayUrls').value.trim();
+    if (!value) { relayConfig = undefined; return; }
+    const urls = value.split(/\s+/);
+    if (urls.some(url => !/^turns?:[\w.\-]+(?::\d+)?(?:\?transport=(?:udp|tcp))?$/i.test(url)) ||
+        !$('relayUser').value.trim() || !$('relayPassword').value) throw new Error('Check the TURN URLs, username and password.');
+    relayConfig = { iceServers: [{ urls: 'stun:stun.cloudflare.com:3478' },
+      { urls, username: $('relayUser').value.trim(), credential: $('relayPassword').value }] };
+  }
   function initPeer(slot = 0) {
     if (!window.Peer) { showError('The PeerJS library could not load. Check your internet connection and refresh.'); return; }
     peerSlot = slot;
-    peer = new Peer(`${roomBase}-${slot}`, { debug: 1 });
+    peer = new Peer(`${roomBase}-${slot}`, relayConfig ? { config: relayConfig, debug: 1 } : { debug: 1 });
     peer.on('open', () => { setStatus('Waiting for your friend…'); if (slot === 1) scheduleReconnect(); });
     peer.on('connection', async incoming => {
       if (!key && el.pass.value.length >= 6) { try { await prepareKey(); } catch (_) {} }
@@ -68,6 +78,7 @@
   }
   async function prepareKey() { const pass = el.pass.value; if (pass.length < 12) throw new Error('Use a secret code of at least 12 characters.'); try { await DuoDB.unlock(pass); } catch (_) { throw new Error('Cannot unlock saved history. Use your original secret code; history has not been deleted.'); } key = await DuoCrypto.makeKey(pass); }
   async function startConnection() {
+    try { configureRelay(); } catch (error) { showError(error.message); return false; }
     showError('');
     try { if (!window.Peer) throw new Error('Could not load the connection service. Check your internet.'); const normalize = value => { let digits = value.replace(/\D/g, ''); if (digits.length === 12 && digits.startsWith('91')) digits = digits.slice(2); return digits; }; const own = normalize($('ownNumber').value), friend = normalize($('friendNumber').value); if (!/^[6-9]\d{9}$/.test(own) || !/^[6-9]\d{9}$/.test(friend) || own === friend) throw new Error('Enter two different valid 10-digit Indian phone numbers.'); await prepareKey(); const pair = [own, friend].sort().join(':'); roomBase = await DuoCrypto.roomId(el.pass.value, pair); if (peer) peer.destroy(); clearTimeout(reconnectTimer); conn = null; setStatus('Connecting…'); initPeer(); }
     catch (err) { showError(err.message || 'Could not prepare secure connection.'); return false; }
