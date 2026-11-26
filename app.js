@@ -3,6 +3,7 @@
   const $ = id => document.getElementById(id);
   const el = { connect: $('connectScreen'), chat: $('chatScreen'), myId: $('myId'), friendId: $('friendId'), pass: $('passphrase'), connectBtn: $('connectButton'), error: $('connectError'), peerState: $('peerState'), status: $('connectionStatus'), typing: $('typingStatus'), messages: $('messages'), input: $('messageInput'), composer: $('composer'), file: $('fileInput'), preview: $('filePreview'), fileName: $('fileName'), toast: $('toast') };
   let peer, conn, key, typingTimer, selectedFile, lastTypingSent = 0, receivedFiles = {}, reconnectTimer, flushing = false, roomBase, peerSlot = 0;
+  let mediaCall, localStream, pendingCall, callToken, callVideo = false, callReady;
   const MAX_FILE = 5 * 1024 * 1024, CHUNK_SIZE = 42 * 1024;
 
   const uid = () => crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`;
@@ -35,6 +36,13 @@
       }
       attachConnection(incoming);
     });
+    peer.on('call', incoming => {
+      if (!canSend() || incoming.peer !== conn.peer || !callToken || incoming.metadata?.token !== callToken || mediaCall || pendingCall) { incoming.close(); return; }
+      callToken = null; pendingCall = incoming; callVideo = incoming.metadata.video === true;
+      $('callPanel').classList.remove('hidden'); $('callStatus').textContent = `Incoming ${callVideo ? 'video' : 'voice'} call`;
+      $('acceptCall').classList.remove('hidden');
+      incoming.on('close', () => endCall(false)); incoming.on('error', () => endCall(false));
+    });
     peer.on('disconnected', () => setStatus('Signaling offline'));
     peer.on('error', err => { console.warn('PeerJS:', err); if (err.type === 'unavailable-id' && slot === 0) { peer.destroy(); initPeer(1); return; } if (err.type === 'unavailable-id') { failConnection('This code already has two people connected.'); return; } if (err.type === 'peer-unavailable') { conn = null; setStatus('Waiting for your friend…'); scheduleReconnect(); return; } showError(`Connection error: ${err.type || err.message}`); setStatus('Offline'); });
   }
@@ -50,7 +58,7 @@
     conn.on('open', async () => { setStatus('Checking shared secret…'); try { await sendEncrypted({ type: 'hello', version: 1, nonce: uid() }); } catch (err) { failConnection('Could not start encrypted connection.'); } });
     let incomingQueue = Promise.resolve();
     conn.on('data', packet => { incomingQueue = incomingQueue.then(() => conn === connection ? receivePacket(packet) : undefined).catch(err => console.error('Packet error:', err)); });
-    conn.on('close', () => { if (conn === connection) { conn = null; setStatus('Offline — messages will queue'); scheduleReconnect(); } });
+    conn.on('close', () => { if (conn === connection) { endCall(false); conn = null; setStatus('Offline — messages will queue'); scheduleReconnect(); } });
     conn.on('error', () => failConnection('Connection dropped. Your unsent messages are safely queued.'));
   }
   function scheduleReconnect() { clearTimeout(reconnectTimer); if (!key || !peer || peer.destroyed || peerSlot !== 1) return; reconnectTimer = setTimeout(() => { if (!conn && peer.open) attachConnection(peer.connect(`${roomBase}-0`, { reliable: true, serialization: 'json' })); else if (!conn) scheduleReconnect(); }, 5000); }
@@ -61,6 +69,9 @@
     if (data.type === 'hello') { conn.ready = true; showError(''); setStatus('Online', true); await sendEncrypted({ type: 'hello-ok' }); await flushQueue(); return; }
     if (data.type === 'hello-ok') { conn.ready = true; showError(''); setStatus('Online', true); await flushQueue(); return; }
     if (!conn.ready) return;
+    if (data.type === 'call-offer' && typeof data.token === 'string' && !mediaCall && !pendingCall) { callToken = data.token; await sendEncrypted({ type: 'call-ready', token: data.token }); setTimeout(() => { if (callToken === data.token) callToken = null; }, 30000); }
+    if (data.type === 'call-ready' && callReady?.token === data.token) callReady.resolve();
+    if (data.type === 'call-end') endCall(false);
     if (data.type === 'message') { const msg = data.message; if (!(await DuoDB.getMessages()).some(m => m.id === msg.id)) { msg.mine = false; msg.state = 'delivered'; await saveAndRender(msg); notify(msg); } await sendEncrypted({ type: 'receipt', id: msg.id, state: document.visibilityState === 'visible' ? 'read' : 'delivered' }); }
     if (data.type === 'receipt' && ['delivered', 'read'].includes(data.state)) { const current = (await DuoDB.getMessages()).find(m => m.id === data.id && m.mine); if (current && !(current.state === 'read' && data.state === 'delivered')) { await DuoDB.updateState(data.id, data.state); await replaceMessage(data.id); } }
     if (data.type === 'typing') { el.typing.textContent = 'typing…'; clearTimeout(typingTimer); typingTimer = setTimeout(() => el.typing.textContent = '', 1400); }
@@ -76,6 +87,20 @@
   async function queueFile(file) { const data = bytesToBase64(new Uint8Array(await file.arrayBuffer())); const msg = { id: uid(), time: Date.now(), mine: true, state: 'queued', file: { name: file.name, size: file.size, type: file.type || 'application/octet-stream', data } }; await saveAndRender(msg); if (canSend()) try { await transmit(msg); } catch { toast('File queued until reconnection.'); } }
   async function sendFile(msg) { const f = msg.file; await sendEncrypted({ type: 'file-start', id: msg.id, messageId: msg.id, name: f.name, size: f.size, mime: f.type, time: msg.time }); for (let i = 0, n = 0; i < f.data.length; i += CHUNK_SIZE, n++) await sendEncrypted({ type: 'file-chunk', id: msg.id, index: n, chunk: f.data.slice(i, i + CHUNK_SIZE) }); await sendEncrypted({ type: 'file-end', id: msg.id, messageId: msg.id, time: msg.time }); }
   function notify(msg) { if (document.hidden && Notification.permission === 'granted') new Notification('Saumyaa', { body: msg.text || `Sent a file: ${msg.file?.name || 'attachment'}` }); }
+  async function openMedia(video) { return navigator.mediaDevices.getUserMedia({ audio: true, video }); }
+  function wireCall(call) { mediaCall = call; call.on('stream', stream => { $('remoteVideo').srcObject = stream; $('callStatus').textContent = 'Connected'; }); call.on('close', () => endCall(false)); call.on('error', () => { toast('Call failed. Please try again.'); endCall(false); }); }
+  async function startCall(video) {
+    if (!canSend()) return toast('Connect to your friend before calling.');
+    if (mediaCall || pendingCall) return;
+    $('callPanel').classList.remove('hidden'); $('callStatus').textContent = 'Allow microphone' + (video ? ' and camera' : '') + ' access…';
+    try { localStream = await openMedia(video); $('localVideo').srcObject = localStream; $('localVideo').hidden = !video; $('muteCall').classList.remove('hidden'); const token = uid(); const ready = new Promise((resolve, reject) => { callReady = { token, resolve }; setTimeout(() => reject(new Error('Call timed out')), 10000); }); await sendEncrypted({ type: 'call-offer', token }); await ready; callReady = null; if (!localStream || !canSend()) return; wireCall(peer.call(conn.peer, localStream, { metadata: { token, video } })); $('callStatus').textContent = 'Calling…'; }
+    catch (error) { toast('Unable to start call. Check microphone and camera permissions.'); endCall(true); }
+  }
+  function endCall(tellFriend = true) { if (tellFriend && canSend()) sendEncrypted({ type: 'call-end' }).catch(() => {}); const call = mediaCall || pendingCall; mediaCall = null; pendingCall = null; callToken = null; callReady = null; if (call) call.close(); if (localStream) localStream.getTracks().forEach(track => track.stop()); localStream = null; $('localVideo').srcObject = null; $('remoteVideo').srcObject = null; $('callPanel').classList.add('hidden'); $('acceptCall').classList.add('hidden'); $('muteCall').classList.add('hidden'); $('muteCall').textContent = 'Mute'; }
+  $('voiceCall').addEventListener('click', () => startCall(false)); $('videoCall').addEventListener('click', () => startCall(true));
+  $('endCall').addEventListener('click', () => endCall(true));
+  $('muteCall').addEventListener('click', () => { const track = localStream?.getAudioTracks()[0]; if (track) { track.enabled = !track.enabled; $('muteCall').textContent = track.enabled ? 'Mute' : 'Unmute'; } });
+  $('acceptCall').addEventListener('click', async () => { const call = pendingCall; if (!call) return; $('acceptCall').classList.add('hidden'); try { localStream = await openMedia(callVideo); if (pendingCall !== call) { localStream.getTracks().forEach(track => track.stop()); localStream = null; return; } $('localVideo').srcObject = localStream; $('localVideo').hidden = !callVideo; $('muteCall').classList.remove('hidden'); pendingCall = null; wireCall(call); call.answer(localStream); $('callStatus').textContent = 'Connecting…'; } catch (_) { toast('Microphone or camera permission was denied.'); endCall(true); } });
   function setFile(file) { if (!file) return; if (file.size > MAX_FILE) return toast('Files must be 5 MB or smaller.'); selectedFile = file; el.fileName.textContent = `${file.name} (${Math.ceil(file.size / 1024)} KB)`; el.preview.classList.remove('hidden'); }
   function openChat() { el.connect.classList.add('hidden'); el.chat.classList.remove('hidden'); renderMessages(); }
   async function importChat(file) { try { const data = JSON.parse(await file.text()); if (!Array.isArray(data.messages)) throw new Error(); await DuoDB.importMessages(data.messages); await renderMessages(); toast('Chat imported to this device.'); } catch { toast('That is not a valid DuoChat backup.'); } }
