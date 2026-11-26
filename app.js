@@ -1,6 +1,17 @@
 /* DuoChat application logic. PeerJS only brokers the initial WebRTC connection. */
 (() => {
   const $ = id => document.getElementById(id);
+  document.querySelectorAll('[data-draft]').forEach(button => {
+    button.addEventListener('click', () => {
+      const input = $('messageInput');
+      const draft = [input.value, button.dataset.draft].filter(Boolean).join(' ');
+      if (draft.length > input.maxLength) return toast('Message is full.');
+      input.value = draft;
+      button.closest('details').open = false;
+      input.focus();
+      input.dispatchEvent(new Event('input'));
+    });
+  });
   const el = { connect: $('connectScreen'), chat: $('chatScreen'), myId: $('myId'), friendId: $('friendId'), pass: $('passphrase'), connectBtn: $('connectButton'), error: $('connectError'), peerState: $('peerState'), status: $('connectionStatus'), typing: $('typingStatus'), messages: $('messages'), input: $('messageInput'), composer: $('composer'), file: $('fileInput'), preview: $('filePreview'), fileName: $('fileName'), toast: $('toast') };
   let peer, conn, key, typingTimer, selectedFile, lastTypingSent = 0, receivedFiles = Object.create(null), reconnectTimer, flushing = false, roomBase, peerSlot = 0;
   let mediaCall, localStream, pendingCall, callToken, callVideo = false, callReady;
