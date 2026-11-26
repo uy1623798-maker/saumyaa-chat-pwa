@@ -44,7 +44,26 @@
       $('acceptCall').classList.remove('hidden');
       incoming.on('close', () => endCall(false)); incoming.on('error', () => endCall(false));
     });
-    peer.on('disconnected', () => setStatus('Signaling offline'));
+    const endpoint = peer;
+    let signalTimer;
+    function restoreSignaling() {
+      clearTimeout(signalTimer);
+      if (endpoint !== peer || endpoint.destroyed || !endpoint.disconnected) return;
+      if (navigator.onLine) {
+        try { endpoint.reconnect(); } catch { /* Retry when the network settles. */ }
+      }
+      signalTimer = setTimeout(restoreSignaling, 5000);
+    }
+    endpoint.on('disconnected', () => {
+      if (!canSend()) setStatus('Network interrupted — reconnecting…');
+      clearTimeout(signalTimer);
+      signalTimer = setTimeout(restoreSignaling, 2000);
+    });
+    window.addEventListener('online', restoreSignaling);
+    endpoint.on('close', () => {
+      clearTimeout(signalTimer);
+      window.removeEventListener('online', restoreSignaling);
+    });
     peer.on('error', err => { console.warn('PeerJS:', err); if (err.type === 'unavailable-id' && slot === 0) { peer.destroy(); initPeer(1); return; } if (err.type === 'unavailable-id') { failConnection('This code already has two people connected.'); return; } if (err.type === 'peer-unavailable') { conn = null; setStatus('Waiting for your friend…'); scheduleReconnect(); return; } showError(`Connection error: ${err.type || err.message}`); setStatus('Offline'); });
   }
   async function prepareKey() { const pass = el.pass.value; if (pass.length < 12) throw new Error('Use a secret code of at least 12 characters.'); try { await DuoDB.unlock(pass); } catch (_) { throw new Error('Cannot unlock saved history. Use your original secret code; history has not been deleted.'); } key = await DuoCrypto.makeKey(pass); }
@@ -56,6 +75,15 @@
   }
   function attachConnection(connection) {
     if (conn && conn !== connection) conn.close(); conn = connection; conn.ready = false;
+    // Retry stalled ICE negotiation after switching Wi-Fi or mobile networks.
+    const deadline = setTimeout(() => {
+      if (conn !== connection || connection.ready) return;
+      conn = null;
+      connection.close();
+      setStatus('Connection timed out — waiting for your friend…');
+      scheduleReconnect();
+    }, 30000);
+    connection.on('close', () => clearTimeout(deadline));
     conn.on('open', async () => { setStatus('Checking shared secret…'); try { connection.challenge = uid(); await sendEncrypted({ type: 'hello', version: 2, nonce: connection.challenge }); } catch (err) { failConnection('Could not start encrypted connection.'); } });
     let incomingQueue = Promise.resolve();
     conn.on('data', packet => { incomingQueue = incomingQueue.then(() => conn === connection ? receivePacket(packet) : undefined).catch(err => console.error('Packet error:', err)); });
