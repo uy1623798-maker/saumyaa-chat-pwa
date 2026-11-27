@@ -87,7 +87,21 @@
     });
     peer.on('error', err => { console.warn('PeerJS:', err); if (err.type === 'unavailable-id' && slot === 0) { peer.destroy(); initPeer(1); return; } if (err.type === 'unavailable-id') { failConnection('This code already has two people connected.'); return; } if (err.type === 'peer-unavailable') { conn = null; setStatus('Waiting for your friend…'); scheduleReconnect(); return; } showError(`Connection error: ${err.type || err.message}`); setStatus('Offline'); });
   }
-  async function prepareKey() { const pass = el.pass.value; if (pass.length < 12) throw new Error('Use a secret code of at least 12 characters.'); try { await DuoDB.unlock(pass); } catch (_) { throw new Error('Cannot unlock saved history. Use your original secret code; history has not been deleted.'); } key = await DuoCrypto.makeKey(pass); }
+  async function prepareKey() {
+    const pass = el.pass.value;
+    if (pass.length < 12) throw new Error('Secret code needs at least 12 characters.');
+    if (!window.crypto?.subtle || !navigator.locks?.request) throw new Error('Open the HTTPS Saumyaa link directly in Chrome to unlock chats.');
+    try {
+      await DuoDB.unlock(pass);
+    } catch (error) {
+      if (error.name === 'OperationError' || error.message === 'Wrong local history code') {
+        throw new Error('Saved history could not be unlocked. Enter the original code for this device, including exact spaces and capital letters.');
+      }
+      if (error.name === 'QuotaExceededError') throw new Error('Device storage is full. Free some space without clearing Saumyaa data, then retry.');
+      throw new Error('Browser storage is unavailable. Open Saumyaa directly in Chrome and retry.');
+    }
+    key = await DuoCrypto.makeKey(pass);
+  }
   async function startConnection() {
     try { configureRelay(); } catch (error) { showError(error.message); return false; }
     showError('');
