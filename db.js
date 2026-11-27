@@ -1,6 +1,6 @@
 /* Small promise-based IndexedDB helpers. Everything here stays in this browser. */
-const DuoDB = (() => {
-  const DB_NAME = 'duochat-local', DB_VERSION = 1, STORE = 'messages', META = 'meta';
+function createChatStore(DB_NAME) {
+  const DB_VERSION = 1, STORE = 'messages', META = 'meta';
   let database, vaultKey;
   async function rows() { const d = await db(); return new Promise((resolve, reject) => { const r = d.transaction(STORE).objectStore(STORE).getAll(); r.onsuccess = () => resolve(r.result); r.onerror = () => reject(r.error); }); }
   function db() {
@@ -23,7 +23,7 @@ const DuoDB = (() => {
       tx.oncomplete = () => resolve(result); tx.onerror = () => reject(tx.error);
     });
   }
-  return {
+  const DuoDB = {
     unlock: passphrase => navigator.locks.request('saumyaa-vault-migration', async () => {
       const config = await DuoDB.getMeta('vault');
       const salt = config ? Uint8Array.from(config.salt) : crypto.getRandomValues(new Uint8Array(32));
@@ -66,4 +66,6 @@ const DuoDB = (() => {
     getMeta: async key => { const d = await db(); return new Promise((resolve, reject) => { const r = d.transaction(META).objectStore(META).get(key); r.onsuccess = () => resolve(r.result?.value); r.onerror = () => reject(r.error); }); },
     setMeta: (key, value) => transaction(META, 'readwrite', s => s.put({ key, value }))
   };
-})();
+  return DuoDB;
+}
+let DuoDB = createChatStore('duochat-local');

@@ -92,10 +92,23 @@
     if (pass.length < 12) throw new Error('Secret code needs at least 12 characters.');
     if (!window.crypto?.subtle || !navigator.locks?.request) throw new Error('Open the HTTPS Saumyaa link directly in Chrome to unlock chats.');
     try {
-      await DuoDB.unlock(pass);
+      const store = createChatStore('duochat-local');
+      try {
+        await store.unlock(pass);
+        DuoDB = store;
+      } catch (error) {
+        if (error.name !== 'OperationError' && error.message !== 'Wrong local history code') throw error;
+        const name = await DuoCrypto.roomId(pass, 'separate-local-history');
+        if (!allowSeparate && !localStorage.getItem(name)) throw error;
+        const separate = createChatStore(name);
+        await separate.unlock(pass);
+        localStorage.setItem(name, '1');
+        DuoDB = separate;
+      }
     } catch (error) {
       if (error.name === 'OperationError' || error.message === 'Wrong local history code') {
-        throw new Error('Saved history could not be unlocked. Enter the original code for this device, including exact spaces and capital letters.');
+        $('freshChat').hidden = false;
+        throw new Error('Enter the original code for saved messages, or use this code with separate history below. Your previous chats are kept.');
       }
       if (error.name === 'QuotaExceededError') throw new Error('Device storage is full. Free some space without clearing Saumyaa data, then retry.');
       throw new Error('Browser storage is unavailable. Open Saumyaa directly in Chrome and retry.');
@@ -170,7 +183,16 @@
   function openChat() { el.connect.classList.add('hidden'); el.chat.classList.remove('hidden'); renderMessages(); }
   async function importChat(file) { try { await DuoDB.restoreBackup(JSON.parse(await file.text()), el.pass.value); await renderMessages(); toast('Chat restored.'); } catch { toast('Cannot restore backup. Check the file and secret code.'); } }
 
-  el.connectBtn.addEventListener('click', async () => { if (await startConnection()) openChat(); });
+  let allowSeparate = false;
+  async function join(separate) {
+    allowSeparate = separate;
+    el.connectBtn.disabled = $('freshChat').disabled = true;
+    $('freshChat').hidden = true;
+    try { if (await startConnection()) openChat(); }
+    finally { allowSeparate = false; el.connectBtn.disabled = $('freshChat').disabled = false; }
+  }
+  el.connectBtn.addEventListener('click', () => join(false));
+  $('freshChat').addEventListener('click', () => join(true));
   $('backButton').addEventListener('click', () => { el.chat.classList.add('hidden'); el.connect.classList.remove('hidden'); });
   $('themeButton').addEventListener('click', () => { document.body.classList.toggle('dark'); $('themeButton').textContent = document.body.classList.contains('dark') ? '☀ Light mode' : '☾ Dark mode'; });
   el.composer.addEventListener('submit', async event => { event.preventDefault(); const text = el.input.value.trim(); if (!text && !selectedFile) return; if (text) { await sendText(text); el.input.value = ''; } if (selectedFile) { const file = selectedFile; selectedFile = null; el.preview.classList.add('hidden'); await queueFile(file); } });
